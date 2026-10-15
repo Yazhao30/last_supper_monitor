@@ -1,0 +1,81 @@
+name: Last Supper ticket monitor
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "Manual run mode"
+        required: true
+        default: "monitor"
+        type: choice
+        options:
+          - monitor
+          - telegram-test
+          - debug
+  schedule:
+    # 02, 07, 12, ... minutes past each hour (UTC).
+    # Avoiding minute 00 can reduce GitHub Actions schedule congestion.
+    - cron: "2-59/5 * * * *"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: last-supper-monitor
+  cancel-in-progress: true
+
+jobs:
+  monitor:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    # Official Playwright image: Chromium + required Linux libraries are preinstalled.
+    container:
+      image: mcr.microsoft.com/playwright/python:v1.55.0-noble
+    env:
+      TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+      TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+      STATE_PATH: state.json
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Install Python packages
+        run: pip install --disable-pip-version-check -r requirements.txt
+
+      - name: Restore notification state
+        id: restore-state
+        uses: actions/cache/restore@v4
+        with:
+          path: state.json
+          key: last-supper-state-${{ github.run_id }}
+          restore-keys: |
+            last-supper-state-
+
+      - name: Run Telegram test
+        if: github.event_name == 'workflow_dispatch' && inputs.mode == 'telegram-test'
+        run: python monitor.py --telegram-test
+
+      - name: Run debug scan
+        if: github.event_name == 'workflow_dispatch' && inputs.mode == 'debug'
+        run: python monitor.py --debug --no-telegram
+
+      - name: Run ticket monitor
+        if: github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.mode == 'monitor')
+        run: python monitor.py
+
+      - name: Upload debug files
+        if: github.event_name == 'workflow_dispatch' && inputs.mode == 'debug' && always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: vivaticket-debug-${{ github.run_id }}
+          path: debug/
+          if-no-files-found: ignore
+          retention-days: 3
+
+      - name: Save notification state
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: state.json
+          key: last-supper-state-${{ github.run_id }}
